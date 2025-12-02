@@ -41,9 +41,18 @@ def convert_df_to_excel(df):
     return processed_data
 
 def create_zip_archive(selected_indices, df_source):
-    """Membuat file ZIP berisi file Excel terpilih"""
+    """
+    Membuat file ZIP berisi file Excel terpilih dengan penanganan duplikasi cerdas.
+    """
     zip_buffer = io.BytesIO()
     
+    # Dictionary untuk menyimpan cache data URL yang sudah didownload dalam sesi ini
+    # Format: { 'url_download': dataframe_pandas }
+    url_cache = {} 
+    
+    # Set untuk melacak nama file yang sudah ada di dalam ZIP agar tidak bentrok
+    used_filenames = set()
+
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         progress_text = "Sedang memproses file..."
         my_bar = st.progress(0, text=progress_text)
@@ -51,23 +60,52 @@ def create_zip_archive(selected_indices, df_source):
         
         for i, index in enumerate(selected_indices):
             row = df_source.loc[index]
-            clean_name = f"{row['No.']}.{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
-            file_name_full = f"{clean_name}.xlsx"
             url_target = row['link_download']
             
-            my_bar.progress((i + 1) / total, text=f"Memproses: {file_name_full}")
+            # 1. Tentukan Nama File Dasar
+            clean_name = f"{row['No.']}-{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
+            # Bersihkan karakter ilegal untuk nama file windows/linux
+            clean_name = "".join([c for c in clean_name if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
+            base_filename = f"{clean_name}.xlsx"
             
-            # Cek session state atau fetch baru
+            # 2. Handle Nama File Duplikat (Agar tidak menimpa/folder-in-folder)
+            final_filename = base_filename
+            counter = 1
+            while final_filename in used_filenames:
+                # Jika nama sudah ada, tambahkan suffix (1), (2), dst
+                name_without_ext = base_filename.replace(".xlsx", "")
+                final_filename = f"{name_without_ext}_({counter}).xlsx"
+                counter += 1
+            
+            used_filenames.add(final_filename)
+            
+            # Update Progress
+            my_bar.progress((i + 1) / total, text=f"Memproses: {final_filename}")
+
+            # 3. Smart Fetching (Cek Cache Dulu)
+            df_data = None
+            
+            # Cek apakah data untuk URL ini sudah ada di session state (preview)
             if f"data_{index}" in st.session_state:
                 df_data = st.session_state[f"data_{index}"]
+            
+            # Cek apakah URL ini sudah didownload di putaran loop sebelumnya (cache lokal)
+            elif url_target in url_cache:
+                df_data = url_cache[url_target]
+            
+            # Jika belum ada di mana-mana, baru fetch dari internet
             else:
                 df_data = fetch_data(url_target)
                 if df_data is not None:
+                    # Simpan ke cache lokal agar url sama tidak perlu download ulang
+                    url_cache[url_target] = df_data
+                    # Opsional: Simpan juga ke session state agar nanti kalau user klik preview, datanya ada
                     st.session_state[f"data_{index}"] = df_data
-            
+
+            # 4. Tulis ke ZIP
             if df_data is not None and not df_data.empty:
                 excel_bytes = convert_df_to_excel(df_data)
-                zip_file.writestr(file_name_full, excel_bytes)
+                zip_file.writestr(final_filename, excel_bytes)
             
         my_bar.empty()
         
