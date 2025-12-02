@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 import requests
@@ -52,7 +51,7 @@ def create_zip_archive(selected_indices, df_source):
         
         for i, index in enumerate(selected_indices):
             row = df_source.loc[index]
-            clean_name = f"{row['Penamaan_Data']}_{row['PIC']}_{row['Bulan_rilis']}".replace(" ", "_")
+            clean_name = f"{row['No.']}.{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
             file_name_full = f"{clean_name}.xlsx"
             url_target = row['link_download']
             
@@ -106,26 +105,45 @@ if uploaded_file is not None:
     try:
         df_input = pd.read_excel(uploaded_file)
         
-        # Validasi Kolom
-        required_cols = ['link_download', 'Penamaan_Data', 'PIC', 'Bulan_rilis']
+        # Validasi Keberadaan Kolom (Header)
+        required_cols = ['link_download', 'No.', 'Dinas/lnstansi Pemerintah Daerah', 'Judul Tabel']
         if not all(col in df_input.columns for col in required_cols):
             st.error(f"❌ Format salah! Kolom wajib: {required_cols}")
+            st.stop() # Kalau header salah, stop total karena sistem pasti error
         
         else:
-            cols_to_check = ['Penamaan_Data', 'PIC', 'Bulan_rilis']
-            if df_input[cols_to_check].isnull().any().any():
-                st.error("⛔ Validasi Gagal: Ada data kosong (NaN).")
+            # --- LOGIKA BARU: FILTER DATA ---
+            # Kolom yang tidak boleh kosong datanya
+            cols_to_check = ['link_download', 'No.', 'Dinas/lnstansi Pemerintah Daerah', 'Judul Tabel']
+            
+            # Pisahkan data bersih dan data kotor
+            df_clean = df_input.dropna(subset=cols_to_check)
+            df_dirty = df_input[df_input[cols_to_check].isnull().any(axis=1)]
+
+            # Jika ada data kotor, beritahu user tapi JANGAN STOP (kecuali semua data kotor)
+            if not df_dirty.empty:
+                st.warning(f"⚠️ Perhatian: Ditemukan **{len(df_dirty)} baris data tidak lengkap** (NaN) yang akan dilewati.")
+                with st.expander("Lihat Data yang Bermasalah"):
+                    st.dataframe(df_dirty)
+            
+            # Jika setelah dibersihkan datanya habis (kosong semua), baru kita stop
+            if df_clean.empty:
+                st.error("⛔ Semua data dalam file ini tidak lengkap/kosong. Tidak ada yang bisa diproses.")
                 st.stop()
 
-            st.info(f"✅ Validasi Sukses. Total: {len(df_input)} file.")
+            # Ganti df_input menjadi df_clean untuk proses selanjutnya
+            df_input = df_clean.reset_index(drop=True)
+
+            st.info(f"✅ Siap Memproses **{len(df_input)}** file yang valid.")
 
             for col in cols_to_check:
                 df_input[col] = df_input[col].astype(str)
 
             # ==========================================
-            # AREA BULK ACTION
+            # AREA BULK ACTION (Sama seperti sebelumnya)
             # ==========================================
             st.markdown("### 📦 Bulk Action")
+            
             
             # Layout Kontrol: Tombol Select di Kiri, Tombol ZIP di Kanan
             action_col1, action_col2 = st.columns([2, 3])
@@ -190,7 +208,7 @@ if uploaded_file is not None:
             h_col2.markdown("**Daftar File**")
 
             for index, row in df_input.iterrows():
-                clean_name = f"{row['Penamaan_Data']}_{row['PIC']}_{row['Bulan_rilis']}".replace(" ", "_")
+                clean_name = f"{row['No.']}-{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
                 file_name_full = f"{clean_name}.xlsx"
                 url_target = row['link_download']
                 
@@ -206,8 +224,8 @@ if uploaded_file is not None:
                         c1, c2 = st.columns([1, 3])
                         
                         with c1:
-                            st.text(f"PIC: {row['PIC']}")
-                            st.text(f"Rilis: {row['Bulan_rilis']}")
+                            st.text(f"Dinas: \n{row['Dinas/lnstansi Pemerintah Daerah']}")
+                            st.text(f"Rilis: \n{row['Bulan Rilis']}")
                             if st.button("🔍 Cek Data", key=f"btn_fetch_{index}"):
                                 with st.spinner('Loading...'):
                                     res = fetch_data(url_target)
