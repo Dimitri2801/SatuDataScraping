@@ -9,7 +9,7 @@ import zipfile
 # KONFIGURASI HALAMAN
 # ==========================================
 st.set_page_config(
-    page_title="BPS DKI Scraper",
+    page_title="BPS DKI Satu Data Mining",
     page_icon="📊",
     layout="wide"
 )
@@ -141,8 +141,8 @@ with st.sidebar:
 # ==========================================
 # MAIN DASHBOARD
 # ==========================================
-st.title("📊 BPS DKI Scraper")
-st.markdown(f"Selamat datang pada sistem listing downloading.")
+st.title("📊 Pengunduh Satu Data Untuk BPS DKI")
+st.markdown(f"Selamat datang pada sistem pengunduhan satu data.")
 st.divider()
 
 if uploaded_file is not None:
