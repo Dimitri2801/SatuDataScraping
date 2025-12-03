@@ -22,6 +22,7 @@ def fetch_data(url):
     """Mengambil data dari API dan mengembalikan DataFrame"""
     try:
         response = requests.get(url, timeout=30)
+        # Jika status code 404/500, ini akan raise error dan masuk ke except
         response.raise_for_status()
         try:
             data_json = response.json()
@@ -30,6 +31,7 @@ def fetch_data(url):
         except ValueError:
             return pd.read_excel(io.BytesIO(response.content))
     except Exception as e:
+        # Return None jika gagal, agar bisa dideteksi oleh logic pemanggil
         return None
 
 def convert_df_to_excel(df):
@@ -40,18 +42,30 @@ def convert_df_to_excel(df):
     processed_data = output.getvalue()
     return processed_data
 
+def generate_safe_filename(row, max_length=120):
+    """Membuat nama file yang aman dan tidak kepanjangan"""
+    raw_name = f"{str(row['No.'])}-{str(row['Dinas/lnstansi Pemerintah Daerah'])}-{str(row['Judul Tabel'])}"
+    clean_name = raw_name.replace(" ", "_")
+    clean_name = "".join([c for c in clean_name if c.isalnum() or c in ('.', '_', '-')]).strip()
+    
+    if len(clean_name) > max_length:
+        clean_name = clean_name[:max_length]
+        
+    return f"{clean_name}.xlsx"
+
 def create_zip_archive(selected_indices, df_source):
     """
-    Membuat file ZIP berisi file Excel terpilih dengan penanganan duplikasi cerdas.
+    Membuat file ZIP dan Laporan Status (Sukses/Gagal).
     """
     zip_buffer = io.BytesIO()
-    
-    # Dictionary untuk menyimpan cache data URL yang sudah didownload dalam sesi ini
-    # Format: { 'url_download': dataframe_pandas }
     url_cache = {} 
-    
-    # Set untuk melacak nama file yang sudah ada di dalam ZIP agar tidak bentrok
     used_filenames = set()
+    
+    # Variabel untuk menampung laporan
+    report = {
+        'success': [], # List nama file yang berhasil
+        'failed': []   # List nama file yang gagal
+    }
 
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
         progress_text = "Sedang memproses file..."
@@ -62,17 +76,13 @@ def create_zip_archive(selected_indices, df_source):
             row = df_source.loc[index]
             url_target = row['link_download']
             
-            # 1. Tentukan Nama File Dasar
-            clean_name = f"{row['No.']}-{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
-            # Bersihkan karakter ilegal untuk nama file windows/linux
-            clean_name = "".join([c for c in clean_name if c.isalnum() or c in (' ', '.', '_', '-')]).strip()
-            base_filename = f"{clean_name}.xlsx"
+            # 1. Generate Nama File
+            base_filename = generate_safe_filename(row)
             
-            # 2. Handle Nama File Duplikat (Agar tidak menimpa/folder-in-folder)
+            # Handle Duplikasi Nama
             final_filename = base_filename
             counter = 1
             while final_filename in used_filenames:
-                # Jika nama sudah ada, tambahkan suffix (1), (2), dst
                 name_without_ext = base_filename.replace(".xlsx", "")
                 final_filename = f"{name_without_ext}_({counter}).xlsx"
                 counter += 1
@@ -82,41 +92,37 @@ def create_zip_archive(selected_indices, df_source):
             # Update Progress
             my_bar.progress((i + 1) / total, text=f"Memproses: {final_filename}")
 
-            # 3. Smart Fetching (Cek Cache Dulu)
+            # 2. Fetching Data
             df_data = None
-            
-            # Cek apakah data untuk URL ini sudah ada di session state (preview)
             if f"data_{index}" in st.session_state:
                 df_data = st.session_state[f"data_{index}"]
-            
-            # Cek apakah URL ini sudah didownload di putaran loop sebelumnya (cache lokal)
             elif url_target in url_cache:
                 df_data = url_cache[url_target]
-            
-            # Jika belum ada di mana-mana, baru fetch dari internet
             else:
                 df_data = fetch_data(url_target)
                 if df_data is not None:
-                    # Simpan ke cache lokal agar url sama tidak perlu download ulang
                     url_cache[url_target] = df_data
-                    # Opsional: Simpan juga ke session state agar nanti kalau user klik preview, datanya ada
                     st.session_state[f"data_{index}"] = df_data
 
-            # 4. Tulis ke ZIP
+            # 3. Validasi & Writing
             if df_data is not None and not df_data.empty:
+                # SUKSES
                 excel_bytes = convert_df_to_excel(df_data)
                 zip_file.writestr(final_filename, excel_bytes)
+                report['success'].append(final_filename)
+            else:
+                # GAGAL (Link mati / Timeout / Data Kosong)
+                # Catat nama file dan linknya untuk laporan
+                report['failed'].append({
+                    'file': final_filename,
+                    'url': url_target
+                })
             
         my_bar.empty()
         
-    return zip_buffer.getvalue()
+    return zip_buffer.getvalue(), report
 
-# --- FUNGSI BARU: SELECT/UNSELECT ALL ---
 def toggle_all_checkboxes(df_len, target_state):
-    """
-    Mengubah semua session_state checkbox menjadi True/False.
-    Callback ini dijalankan saat tombol diklik.
-    """
     for i in range(df_len):
         st.session_state[f"check_{i}"] = target_state
 
@@ -143,71 +149,47 @@ if uploaded_file is not None:
     try:
         df_input = pd.read_excel(uploaded_file)
         
-        # Validasi Keberadaan Kolom (Header)
         required_cols = ['link_download', 'No.', 'Dinas/lnstansi Pemerintah Daerah', 'Judul Tabel']
         if not all(col in df_input.columns for col in required_cols):
             st.error(f"❌ Format salah! Kolom wajib: {required_cols}")
-            st.stop() # Kalau header salah, stop total karena sistem pasti error
+            st.stop() 
         
         else:
-            # --- LOGIKA BARU: FILTER DATA ---
-            # Kolom yang tidak boleh kosong datanya
             cols_to_check = ['link_download', 'No.', 'Dinas/lnstansi Pemerintah Daerah', 'Judul Tabel']
-            
-            # Pisahkan data bersih dan data kotor
             df_clean = df_input.dropna(subset=cols_to_check)
             df_dirty = df_input[df_input[cols_to_check].isnull().any(axis=1)]
 
-            # Jika ada data kotor, beritahu user tapi JANGAN STOP (kecuali semua data kotor)
             if not df_dirty.empty:
-                st.warning(f"⚠️ Perhatian: Ditemukan **{len(df_dirty)} baris data tidak lengkap** (NaN) yang akan dilewati.")
+                st.warning(f"⚠️ Perhatian: Ditemukan **{len(df_dirty)} baris data tidak lengkap** (NaN).")
                 with st.expander("Lihat Data yang Bermasalah"):
                     st.dataframe(df_dirty)
             
-            # Jika setelah dibersihkan datanya habis (kosong semua), baru kita stop
             if df_clean.empty:
-                st.error("⛔ Semua data dalam file ini tidak lengkap/kosong. Tidak ada yang bisa diproses.")
+                st.error("⛔ Semua data kosong.")
                 st.stop()
 
-            # Ganti df_input menjadi df_clean untuk proses selanjutnya
             df_input = df_clean.reset_index(drop=True)
-
             st.info(f"✅ Siap Memproses **{len(df_input)}** file yang valid.")
 
             for col in cols_to_check:
                 df_input[col] = df_input[col].astype(str)
 
             # ==========================================
-            # AREA BULK ACTION (Sama seperti sebelumnya)
+            # AREA BULK ACTION
             # ==========================================
             st.markdown("### 📦 Bulk Action")
             
-            
-            # Layout Kontrol: Tombol Select di Kiri, Tombol ZIP di Kanan
             action_col1, action_col2 = st.columns([2, 3])
             
             with action_col1:
                 st.write("**Seleksi Cepat:**")
                 sub_c1, sub_c2 = st.columns(2)
-                
-                # TOMBOL SELECT ALL
                 with sub_c1:
-                    st.button(
-                        "✅ Select All", 
-                        on_click=toggle_all_checkboxes, 
-                        args=(len(df_input), True)
-                    )
-                
-                # TOMBOL UNSELECT ALL
+                    st.button("✅ Select All", on_click=toggle_all_checkboxes, args=(len(df_input), True))
                 with sub_c2:
-                    st.button(
-                        "❌ Unselect All", 
-                        on_click=toggle_all_checkboxes, 
-                        args=(len(df_input), False)
-                    )
+                    st.button("❌ Unselect All", on_click=toggle_all_checkboxes, args=(len(df_input), False))
 
             with action_col2:
-                # Logic menghitung yang dipilih
                 selected_indices = []
                 for i in range(len(df_input)):
                     if st.session_state.get(f"check_{i}", False):
@@ -217,44 +199,64 @@ if uploaded_file is not None:
                 
                 if selected_indices:
                     if st.button("📦 ZIP Selected Files", type="primary"):
-                        with st.spinner("Sedang mengompres file..."):
-                            zip_data = create_zip_archive(selected_indices, df_input)
+                        with st.spinner("Sedang memproses & memverifikasi link..."):
+                            # Logic baru: terima 2 return value (zip & report)
+                            zip_data, zip_report = create_zip_archive(selected_indices, df_input)
+                            
                             st.session_state['zip_ready'] = zip_data
+                            st.session_state['zip_report'] = zip_report # Simpan laporan ke session
                             st.rerun()
 
-            # Tampilkan tombol download ZIP jika sudah siap
+            # --- TAMPILAN REPORT & DOWNLOAD ---
             if 'zip_ready' in st.session_state:
-                st.success("Arsip ZIP Siap!")
-                st.download_button(
-                    label="⬇️ KLIK UNTUK UNDUH HASIL ZIP",
-                    data=st.session_state['zip_ready'],
-                    file_name="BPS_Data_Archive.zip",
-                    mime="application/zip",
-                    type="primary",
-                    use_container_width=True
-                )
+                report = st.session_state.get('zip_report', {'success': [], 'failed': []})
+                count_success = len(report['success'])
+                count_failed = len(report['failed'])
+                
+                # Container Report
+                with st.container(border=True):
+                    st.markdown("#### 📑 Laporan Pembuatan ZIP")
+                    
+                    # Kolom Metric
+                    m1, m2 = st.columns(2)
+                    m1.metric("Berhasil Masuk ZIP", f"{count_success} File")
+                    m2.metric("Gagal / Link Mati", f"{count_failed} File", delta_color="inverse")
+                    
+                    # Jika ada yang gagal, beri peringatan detail
+                    if count_failed > 0:
+                        st.error(f"⚠️ Ada {count_failed} file yang gagal didownload karena link tidak valid atau timeout.")
+                        with st.expander("Lihat Detail File Gagal"):
+                            # Tampilkan tabel file yg gagal
+                            st.table(pd.DataFrame(report['failed']))
+                    else:
+                        st.success("✅ Sempurna! Semua link valid dan berhasil dikompres.")
+
+                    # Tombol Download Final
+                    st.download_button(
+                        label="⬇️ KLIK UNTUK UNDUH HASIL ZIP",
+                        data=st.session_state['zip_ready'],
+                        file_name="BPS_Data_Archive.zip",
+                        mime="application/zip",
+                        type="primary",
+                        use_container_width=True
+                    )
 
             st.markdown("---")
 
             # ==========================================
             # LOOP LIST FILE
             # ==========================================
-            
-            # Header List
             h_col1, h_col2 = st.columns([0.5, 9.5])
             h_col1.markdown("**#**")
             h_col2.markdown("**Daftar File**")
 
             for index, row in df_input.iterrows():
-                clean_name = f"{row['No.']}-{row['Dinas/lnstansi Pemerintah Daerah']}-{row['Judul Tabel']}".replace(" ", "_")
-                file_name_full = f"{clean_name}.xlsx"
+                file_name_full = generate_safe_filename(row)
                 url_target = row['link_download']
                 
                 col_check, col_exp = st.columns([0.5, 9.5])
                 
                 with col_check:
-                    # Checkbox terhubung dengan session_state 'check_{index}'
-                    # Ini kuncinya agar tombol Select All bisa mengontrol checkbox ini
                     st.checkbox("", key=f"check_{index}")
 
                 with col_exp:
@@ -263,7 +265,7 @@ if uploaded_file is not None:
                         
                         with c1:
                             st.text(f"Dinas: \n{row['Dinas/lnstansi Pemerintah Daerah']}")
-                            st.text(f"Rilis: \n{row['Bulan Rilis']}")
+                            st.text(f"Rilis: \n{row['Judul Tabel']}")
                             if st.button("🔍 Cek Data", key=f"btn_fetch_{index}"):
                                 with st.spinner('Loading...'):
                                     res = fetch_data(url_target)
