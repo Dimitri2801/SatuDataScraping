@@ -224,7 +224,7 @@ if uploaded_file is not None:
                     
                     # Jika ada yang gagal, beri peringatan detail
                     if count_failed > 0:
-                        st.error(f"⚠️ Ada {count_failed} file yang gagal didownload karena link tidak valid atau timeout.")
+                        st.error(f"⚠️ Ada {count_failed} file yang gagal didownload karena link tidak valid atau file terlalu besar.")
                         with st.expander("Lihat Detail File Gagal"):
                             # Tampilkan tabel file yg gagal
                             st.table(pd.DataFrame(report['failed']))
@@ -273,7 +273,7 @@ if uploaded_file is not None:
                                         st.session_state[f"data_{index}"] = res
                                         st.success("OK")
                                     else:
-                                        st.error("Gagal")
+                                        st.error("Gagal, karena file terlalu besar atau link tidak valid")
 
                         with c2:
                             if f"data_{index}" in st.session_state:
